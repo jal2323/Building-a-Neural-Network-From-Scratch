@@ -1,0 +1,733 @@
+---
+title: "Building a Neural Network From The Ground Up"
+author: "Adam"
+date: "January 21, 2018"
+output: 
+        html_document:
+                theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In addition to serving as my first submission to the Kaggle Kernels, this markdown document describes the process I used to construct a neural network from scratch, in R. In this respect, this markdown is quite similar to the one already posted by JunMa (https://www.kaggle.com/russwill/build-your-own-neural-network-in-r). Indeed, this document - as well as the underlying analysis - owe a great deal to JunMa's previous posting. However, I think the process I used to construct a neural network from scratch is sufficiently different from JunMa's to warrant an additional post. 
+
+First, the analysis I present below is, perhaps, a bit more granular than the one presented by JunMa. In many respects, this granularity makes my approach both clumsier and more unwieldly than JunMa's more compact approach. While some may find my approach rustic, I personally prefer to break a system apart into as small as pieces as possible. I find this method helps me better understand what's going on "under the hood" - despite its relative lack of coding sophistication. 
+
+Second, my analysis incorporates mini-batch gradient descent - an optimization approach different from that presented by JunMa.
+
+## Preliminaries
+
+First, I load a couple of libraries that will prove instrumental in this analysis.
+
+```{r echo = TRUE}
+suppressWarnings(suppressMessages(library(caret)))
+suppressWarnings(suppressMessages(library(dplyr)))
+```
+
+Next, I am going to load in the data and remove all pixels exhibiting near zero variance in the observed sample. 
+
+```{r echo = TRUE}
+train <- read.csv("train.csv", header = TRUE) ## 42000 x 785
+
+nzv <- nearZeroVar(train)
+
+train <- train[, -nzv] ## 42000 x 253
+```
+
+Note that removing pixels exhibiting near zero variance reduces the number of columns from 785 to 253.
+
+Next, I split the data into training and development sets. I use a 70/30 split.
+
+```{r echo = TRUE}
+set.seed(999)
+inTrain <- createDataPartition(y=train$label, p=0.7, list=F)
+
+training_set <- train[inTrain, ]
+dev_set <- train[-inTrain, ]
+
+
+train <- training_set ## Rename back to train to avoid confusion
+
+dim(train) ## 29403 x 253
+dim(dev_set) ## 12597 x 253
+```
+
+After that, I separate the labels from the features. I do this for both the training and development sets. I also apply one-hot encoding to the labels so that they are represented by 10 dichotomous vectors.
+
+```{r echo = TRUE}
+label <- train$label
+label <- as.data.frame(label, ncol = 1) ## 29403 x 1
+train.label <- label ## For assessing performance on training set
+
+dev_label <- dev_set$label ## 12597 x 1
+dev_label <- as.data.frame(dev_label, ncol = 1)
+dev.label <- dev_label ## For assessing performance on dev set
+
+
+train <- select(train, -c(label)) ## 29403 x 784
+dev_set <- select(dev_set, -c(label)) ## 12597 x 784
+
+## One-hot encode label
+label <- data.frame(label) ## 29403 x 10
+label$label <- as.factor(label$label)
+label <- model.matrix(~ label + 0, data=label, 
+                      contrasts.arg = lapply(label, contrasts, contrasts=FALSE))
+
+dev_label <- data.frame(dev_label) ## 12597 x 10
+dev_label$dev_label <- as.factor(dev_label$dev_label)
+dev_label <- model.matrix(~ dev_label + 0, data=dev_label,
+                          contrasts.arg = lapply(dev_label, contrasts, contrasts=FALSE))
+```
+
+Finally, I transpose the features matrices, as well as the labels matrices, for both the training and development sets. I also scale the features matrices by the maximum value for RGB (255) as well as establish a timer for assessing processing time.
+
+```{r echo = TRUE}
+train <- t(train) ## 252 x 29403
+label <- t(label) ## 10 x 29403
+
+dev_set <- t(dev_set) ## 252 x 12597
+dev_label <- t(dev_label) ## 10 x 12597
+
+train <- train/max(train) ## Scales by max rgb value = 255
+dev_set <- dev_set/max(dev_set)
+
+tic <- Sys.time()
+```
+
+
+## Model Architecture
+
+I construct a neural network with three hidden layers. As best I can tell, model architecture is somewhat arbitrary. Due to this perceived arbitrariness, I simply made a guess as to what functional form the model architecture should take. I chose to put 15 nodes in the first hidden layer, 5 in the second, and 3 in the third. I have re-run this script using a 100x100x100 architecture and achieved increases of about 5% on dev set accuracy - in addition to steep increases in processing time. 
+
+As far as activation layers go, I am electing to use the ReLu function for all layers but the output layer. The output layer is a one vs. all classifier, hence I am using the softmax function for this layer.
+
+I use the gradient descent algorithm (mini-batch) to optimize coefficient values. I set the learning rate to .05. 
+
+I also use L2 regularization to train this model. I set the lambda to .001.
+
+
+## Coefficient Initialization
+
+I initialize my coefficients via Xavier Initialization. Xavier Initialization takes draws from a random normal distribution and subsequently scales these draws by a factor of $$\sqrt{2/max(train)}$$
+
+```{r echo = TRUE}
+w_1 <- matrix(rnorm(15*252, mean=0, sd=1), nrow = 15, ncol = 252,  byrow = TRUE) # 15x252
+w_1 <- w_1 * sqrt(2/252) ## 15 x 252
+
+
+b_1 <- matrix(rnorm(15, mean=0, sd=sqrt(2/252)), nrow = 15, ncol = 1,  byrow = TRUE) # 15x1
+
+w_2 <- matrix(rnorm(5*15, mean=0, sd=1), nrow = 5, ncol = 15,  byrow = TRUE) ## 5x15
+w_2 <- w_2 * sqrt(2/15) ## 5 x 15
+
+
+b_2 <- matrix(rnorm(5, mean=0, sd=sqrt(2/15)), nrow = 5, ncol = 1,  byrow = TRUE) # 5x1
+
+
+w_3 <- matrix(rnorm(3*5, mean=0, sd=1), nrow = 3, ncol = 5,  byrow = TRUE) # 3x5
+w_3 <- w_3 * sqrt(2/5) ## 3 x 5
+
+
+b_3 <- matrix(rnorm(3, mean=0, sd=sqrt(2/5)), nrow = 3, ncol = 1,  byrow = TRUE) # 3x1
+
+w_4 <- matrix(rnorm(10*3, mean=0, sd=1), nrow=10, ncol=3, byrow=TRUE) ## 10x3
+w_4 <- w_4 * sqrt(2/3) ## 10x3
+
+
+b_4 <- matrix(rnorm(10, mean=0, sd=(2/3)), nrow=10, ncol=1, byrow=TRUE) ## 10 x 1
+```
+
+## Training Commencement
+
+Here, I set some initial values and open an outer loop which will iterate through model epochs.
+
+```{r eval = FALSE}
+num_epochs <- 1000
+alpha <- .05
+cost <- NULL
+m <- ncol(train)
+lambda <- .001 
+
+
+for (j in 1:num_epochs){
+```
+
+## Mini-batch Construction
+
+Next I split the training data into mini-batches. I decided to use a mini-batch size of 32. First, I shuffle both the features matrix and the labels matrix. Then I calculate the number of complete mini-batches (there are 918 of them) and then use conditional logic to slice each shuffled observation into a distinct mini-batch. 
+
+Finally, I open an inner loop which will iterate through the mini-batches.
+
+```{r eval = FALSE}
+shuffle <- sample(1:ncol(train))
+shuffled_train <- train[,shuffle]
+shuffled_label <- label[,shuffle]
+
+num_complete_minibatches <- floor(m/32)
+
+mini_batch_train <- list()
+mini_batch_label <- list()
+for (k in 1:(num_complete_minibatches+1)){
+        
+        if ((((k+1) * 32)+1) > m)
+        {
+                mini_batch_train[[k]] <- 
+                shuffled_train[,((num_complete_minibatches * 32)+1) : m]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[,((num_complete_minibatches * 32)+1) : m]
+        }
+        
+        else if(k == 1) {
+        
+                mini_batch_train[[k]] <- 
+                shuffled_train[, 1 : (k * 32)]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[, 1 : (k * 32)]
+            
+        }
+        
+        else {
+                mini_batch_train[[k]] <- 
+                shuffled_train[,(((k-1)*32)+1) : (k * 32)]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[,(((k-1)*32)+1) : (k * 32)]
+        }
+        
+}
+
+
+
+
+
+
+#######################################################
+## Second iteration - Iterate through mini-batches
+#######################################################
+
+
+for (i in 1:length(mini_batch_train)){
+```
+
+## Implement Forward Propagation
+
+Next, I apply forward propagation to each mini-batch. I am using the relu activation function for all layers but the output layer. The output layer applies the softmax activation function.
+
+The linear portion of forward propagation is defined as:
+
+$$Z^l = W*X + B$$
+The relu activation function is defined as:
+
+$$ A^l = max(0, Z)$$
+
+The softmax activation function is defined as:
+
+$$A^l = (\exp^Z / \sum_{j=1}^{10}exp^Z)$$
+
+```{r eval = FALSE}
+z_1 <- (w_1 %*% mini_batch_train[[i]])
+z_1 <- sweep(z_1, 1, b_1, "+") ## 15 x 32...usually
+a_1 <- matrix(pmax(0, z_1), nrow=15, 
+        ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 15 x 32
+        
+
+z_2 <- (w_2 %*% a_1) 
+z_2 <- sweep(z_2, 1, b_2, "+") ## 5 x 32
+a_2 <- matrix(pmax(0, z_2), nrow=5, 
+        ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 5 x 32
+        
+z_3 <- (w_3 %*% a_2) 
+z_3 <- sweep(z_3, 1, b_3, "+") ## 3 x 32
+a_3 <- matrix(pmax(0, z_3), nrow=3, 
+        ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 3 x 32
+        
+z_4 <- (w_4 %*% a_3) 
+z_4 <- sweep(z_4, 1, b_4, "+") ## 10 x 32
+t_4 <- exp(z_4) ## 10 x 32
+a_4 <- t(t(t_4) / colSums(t_4)) ## 10 x 32
+a_4[a_4 < 0] <- .000000000001 ## To avoid NaNs
+```
+
+## Compute and Regularize the Cost Function
+
+Here I compute the cost function evaluated at the current parameter values. I also apply the regularization term to the cost function. 
+
+The cost function for the softmax output layer is defined as:
+
+$$J(W,B) = (1/m\sum_{i=1}^m(-\sum_{j=1}^{10}y_jlog\hat{y_j}) + (\lambda/2m\sum_{l=1}^L||w^l||_F^2)$$
+
+Where:
+
+$$||w^l||_F^2$$
+is the Frobenius norm. 
+
+
+In addition, I insert some print statements to keep the user updated on training progress.
+
+```{r eval = FALSE}
+        loss <- -colSums(mini_batch_label[[i]]*log(a_4))
+        cost.tmp <- (1/ncol(mini_batch_train[[i]]))*sum(loss)
+        
+        ## Frobenius Norm
+        frob.reg <- ((lambda/(2*ncol(mini_batch_train[[i]]))) * 
+                        (norm(w_1, type=c("F")) + norm(w_2, type = c("F")) +
+                         norm(w_3, type=c("F")) + norm(w_4, type = c("F"))))
+        
+        cost.tmp <- cost.tmp + frob.reg
+        
+        
+        # check progress
+        if (j%%100 == 0 | j == num_epochs){
+                print(paste("epoch", j,': cost', cost.tmp))}
+        
+        if(j%%10 == 0 | j == num_epochs){
+                cost <- c(cost, cost.tmp)}
+```
+
+## Implement Backwards Propagation
+
+I then implement backwards propagation, making sure to account for the presence of the regularization term.
+
+The derivative of the softmax activation function at the output (Lth) layer evaluated at W and B is defined as:
+
+$$dJ(W,B)/dZ^L = \hat{y} - y$$
+
+The derivative of the relu activation function at the lth layer, evaluated at W and B is set to:
+
+$$ dJ(W,B)/dZ^l = W_l^TdJ(W,B)/dZ_{l+1} $$
+
+if if z_l > 0, and set to 0 otherwise.
+
+The derivative of the linear function at the lth layer, evaluated at W and B is set to:
+
+$$ dJ(W,B)/dW^l = (1/m)dJ(W,B)/dZ^l*A_l^T + (\lambda/m)W^l$$
+
+The derivative of the bias term at the lth layer, evaluated at W and B is set to:
+
+$$ dJ(W,B)/dB^l = (1/m)\sum_{i=1}^mdJ(W,B)/dZ^l$$
+
+
+
+```{r eval = FALSE}
+dz_4 <- a_4 - mini_batch_label[[i]]
+        dw_4 <- (1/ncol(mini_batch_train[[i]])) * (dz_4 %*% t(a_3))
+        ## Add regularization to backprop
+        dw_4 <- (dw_4 + ((lambda/ncol(mini_batch_train[[i]])) * w_4)) 
+        db_4 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_4), 
+                          nrow=nrow(b_4), ncol=1)
+        
+        dz_3 <- (t(w_4) %*% dz_4) 
+        dz_3[z_3 <= 0] <- 0
+        dw_3 <- (1/ncol(mini_batch_train[[i]])) * (dz_3 %*% t(a_2))
+        ## Add regularization to backprop
+        dw_3 <- (dw_3 + ((lambda/ncol(mini_batch_train[[i]])) * w_3))
+        db_3 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_3), 
+                          nrow=nrow(b_3), ncol=1)
+        
+        
+        dz_2 <- (t(w_3) %*% dz_3)
+        dz_2[z_2 <= 0] <- 0
+        dw_2 <- (1/ncol(mini_batch_train[[i]])) * (dz_2 %*% t(a_1))
+        ## Add regularization to backprop
+        dw_2 <- (dw_2 + ((lambda/ncol(mini_batch_train[[i]])) * w_2))
+        db_2 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_2), 
+                          nrow=nrow(b_2), ncol=1)
+        
+        dz_1 <- (t(w_2) %*% dz_2)
+        dz_1[z_1 <= 0] <- 0
+        dw_1 <- (1/ncol(mini_batch_train[[i]])) * 
+                (dz_1 %*% t(mini_batch_train[[i]]))
+        ## Add regularization to backprop
+        dw_1 <- (dw_1 + ((lambda/ncol(mini_batch_train[[i]])) * w_1))
+        db_1 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_1), 
+                          nrow=nrow(b_1), ncol=1)
+```
+
+## Update Coefficients
+
+Finally, I update the model coefficients by subtracting the learning rate multiplied by the derivatives of the coefficients from the current coefficient values. I also close both the inner and outer loops.
+
+```{r eval = FALSE}
+        w_4 <- (w_4 - (alpha*(dw_4)))
+        b_4 <- (b_4 - (alpha*(db_4)))
+        
+        w_3 <- (w_3 - (alpha*(dw_3)))
+        b_3 <- (b_3 - (alpha*(db_3)))
+        
+        w_2 <- (w_2 - (alpha*(dw_2)))
+        b_2 <- (b_2 - (alpha*(db_2)))
+        
+        w_1 <- (w_1 - (alpha*(dw_1)))
+        b_1 <- (b_1 - (alpha*(db_1)))
+
+}
+
+
+}
+
+```
+
+```{r echo = FALSE}
+## Run iterative portion of the model in its entirety
+
+##############################################
+## Begin 1st Loop - Iterate through epochs
+##############################################
+
+num_epochs <- 1000
+alpha <- .05
+cost <- NULL
+m <- ncol(train)
+lambda <- .001 ## changed from .001
+
+
+for (j in 1:num_epochs){
+
+
+######################################
+## Create mini-batches
+######################################
+
+shuffle <- sample(1:ncol(train))
+shuffled_train <- train[,shuffle]
+shuffled_label <- label[,shuffle]
+
+num_complete_minibatches <- floor(m/32)
+
+mini_batch_train <- list()
+mini_batch_label <- list()
+for (k in 1:(num_complete_minibatches+1)){
+        
+        if ((((k+1) * 32)+1) > m)
+        {
+                mini_batch_train[[k]] <- 
+                shuffled_train[,((num_complete_minibatches * 32)+1) : m]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[,((num_complete_minibatches * 32)+1) : m]
+        }
+        
+        else if(k == 1) {
+        
+                mini_batch_train[[k]] <- 
+                shuffled_train[, 1 : (k * 32)]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[, 1 : (k * 32)]
+            
+        }
+        
+        else {
+                mini_batch_train[[k]] <- 
+                shuffled_train[,(((k-1)*32)+1) : (k * 32)]
+                
+                mini_batch_label[[k]] <-
+                shuffled_label[,(((k-1)*32)+1) : (k * 32)]
+        }
+        
+}
+
+
+
+
+
+
+#######################################################
+## Second iteration - Iterate through mini-batches
+#######################################################
+
+
+for (i in 1:length(mini_batch_train)){
+        
+        ############################################################
+        ## Implement Forward Propagation
+        ############################################################
+        
+        
+        z_1 <- (w_1 %*% mini_batch_train[[i]])
+        z_1 <- sweep(z_1, 1, b_1, "+") ## 15 x 32...usually
+        a_1 <- matrix(pmax(0, z_1), nrow=15, 
+                      ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 15 x 32
+        
+        
+        z_2 <- (w_2 %*% a_1) 
+        z_2 <- sweep(z_2, 1, b_2, "+") ## 5 x 32
+        a_2 <- matrix(pmax(0, z_2), nrow=5, 
+                      ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 5 x 32
+        
+        z_3 <- (w_3 %*% a_2) 
+        z_3 <- sweep(z_3, 1, b_3, "+") ## 3 x 32
+        a_3 <- matrix(pmax(0, z_3), nrow=3, 
+                      ncol=ncol(mini_batch_train[[i]]), byrow=F) ## 3 x 32
+        
+        z_4 <- (w_4 %*% a_3) 
+        z_4 <- sweep(z_4, 1, b_4, "+") ## 10 x 32
+        t_4 <- exp(z_4) ## 10 x 32
+        a_4 <- t(t(t_4) / colSums(t_4)) ## 10 x 32
+        a_4[a_4 < 0] <- .000000000001 ## To avoid NaNs
+
+
+        ########################################
+        ## Compute Cost
+        ########################################
+        
+        loss <- -colSums(mini_batch_label[[i]]*log(a_4))
+        cost.tmp <- (1/ncol(mini_batch_train[[i]]))*sum(loss)
+        
+        ###############
+        ## Regularize
+        ###############
+        
+        ## Frobenius Norm
+        frob.reg <- ((lambda/(2*ncol(mini_batch_train[[i]]))) * 
+                        (norm(w_1, type=c("F")) + norm(w_2, type = c("F")) +
+                         norm(w_3, type=c("F")) + norm(w_4, type = c("F"))))
+        
+        cost.tmp <- cost.tmp + frob.reg
+        
+        
+        # check progress
+ #       if (j%%100 == 0 | j == num_epochs){
+ #               print(paste("epoch", j,': cost', cost.tmp))}
+        
+        if(j%%10 == 0 | j == num_epochs){
+                cost <- c(cost, cost.tmp)}
+        
+
+        
+        
+        #####################################
+        ## Implement Back Prop
+        #####################################
+        dz_4 <- a_4 - mini_batch_label[[i]]
+        dw_4 <- (1/ncol(mini_batch_train[[i]])) * (dz_4 %*% t(a_3))
+        ## Add regularization to backprop
+        dw_4 <- (dw_4 + ((lambda/ncol(mini_batch_train[[i]])) * w_4)) 
+        db_4 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_4), 
+                          nrow=nrow(b_4), ncol=1)
+        
+        dz_3 <- (t(w_4) %*% dz_4) 
+        dz_3[z_3 <= 0] <- 0
+        dw_3 <- (1/ncol(mini_batch_train[[i]])) * (dz_3 %*% t(a_2))
+        ## Add regularization to backprop
+        dw_3 <- (dw_3 + ((lambda/ncol(mini_batch_train[[i]])) * w_3))
+        db_3 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_3), 
+                          nrow=nrow(b_3), ncol=1)
+        
+        
+        dz_2 <- (t(w_3) %*% dz_3)
+        dz_2[z_2 <= 0] <- 0
+        dw_2 <- (1/ncol(mini_batch_train[[i]])) * (dz_2 %*% t(a_1))
+        ## Add regularization to backprop
+        dw_2 <- (dw_2 + ((lambda/ncol(mini_batch_train[[i]])) * w_2))
+        db_2 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_2), 
+                          nrow=nrow(b_2), ncol=1)
+        
+        dz_1 <- (t(w_2) %*% dz_2)
+        dz_1[z_1 <= 0] <- 0
+        dw_1 <- (1/ncol(mini_batch_train[[i]])) * 
+                (dz_1 %*% t(mini_batch_train[[i]]))
+        ## Add regularization to backprop
+        dw_1 <- (dw_1 + ((lambda/ncol(mini_batch_train[[i]])) * w_1))
+        db_1 <- as.matrix((1/ncol(mini_batch_train[[i]])) * rowSums(dz_1), 
+                          nrow=nrow(b_1), ncol=1)
+
+
+        ###################################
+        ## Update Parameters
+        ###################################
+        
+        w_4 <- (w_4 - (alpha*(dw_4)))
+        b_4 <- (b_4 - (alpha*(db_4)))
+        
+        w_3 <- (w_3 - (alpha*(dw_3)))
+        b_3 <- (b_3 - (alpha*(db_3)))
+        
+        w_2 <- (w_2 - (alpha*(dw_2)))
+        b_2 <- (b_2 - (alpha*(db_2)))
+        
+        w_1 <- (w_1 - (alpha*(dw_1)))
+        b_1 <- (b_1 - (alpha*(db_1)))
+        
+}
+
+
+}
+
+
+```
+
+## Assess Processing Performance
+
+Having trained the model, I then assess how long it took me to train. I find it takes about 20 minutes to train the model when the number of epochs is set to 1000.
+
+```{r echo = TRUE}
+toc <- Sys.time()
+run.time <- toc - tic
+print(run.time)
+```
+
+## Assess Performance on Training Set
+
+Now that the model is trained, it's time to see how well it classifies the hand written digits in the MNIST data set. My accuracy on the training set is about 95% - which really isn't all that good. However, in a supplementary analysis, I trained a three layer neural network with many more hidden units (1000x1000x1000) and achieved a training accuracy of 100%. I do not present that model here because it took me just over two days to train. 
+
+```{r echo = TRUE}
+z_1 <- (w_1 %*% train)
+z_1 <- sweep(z_1, 1, b_1, "+") ## 15 x 29403
+a_1 <- matrix(pmax(0, z_1), nrow=15, 
+              ncol=ncol(train), byrow=F) ## 15 x 29403
+
+
+z_2 <- (w_2 %*% a_1) 
+z_2 <- sweep(z_2, 1, b_2, "+") ## 5 x 29403
+a_2 <- matrix(pmax(0, z_2), nrow=5, 
+              ncol=ncol(train), byrow=F) ## 5 x 29403
+
+z_3 <- (w_3 %*% a_2) 
+z_3 <- sweep(z_3, 1, b_3, "+") ## 3 x 29403
+a_3 <- matrix(pmax(0, z_3), nrow=3, 
+              ncol=ncol(train), byrow=F) ## 3 x 29403
+
+z_4 <- (w_4 %*% a_3) 
+z_4 <- sweep(z_4, 1, b_4, "+") ## 10 x 29403
+t_4 <- exp(z_4) ## 10 x 29403
+a_4 <- t(t(t_4) / colSums(t_4)) ## 10 x 29403
+
+
+y_hat <- rownames(a_4)[apply(a_4,2,which.max)]
+y_hat <- gsub("[^0-9]", "", y_hat)
+y_hat <- as.data.frame(as.numeric(y_hat), nrow=nrow(train.label), ncol=1)
+colnames(y_hat) <- c("label")
+
+head(train.label)
+head(y_hat)
+
+table(y_hat)
+
+acc <- merge(y_hat, train.label, by = label)
+train_accuracy <- nrow(acc) / nrow(train.label) 
+print(train_accuracy)
+```
+
+## Assess Performance on Development Set
+
+The real test of a neural network is how it performs on data that it was not trained on. Here I assess my trained models accuracy on the development set - data that was held out of the training procedure. My model accurately predicts hand written digits in the development set a little over 89% of the time. The more complex model mentioned above achieved a development set accuracy of roughly 97%. 
+
+```{r echo = TRUE}
+z_1 <- (w_1 %*% dev_set)
+z_1 <- sweep(z_1, 1, b_1, "+") ## 15 x 12597
+a_1 <- matrix(pmax(0, z_1), nrow=15, 
+              ncol=ncol(dev_set), byrow=F) ## 15 x 12597
+
+
+z_2 <- (w_2 %*% a_1) 
+z_2 <- sweep(z_2, 1, b_2, "+") ## 5 x 12597
+a_2 <- matrix(pmax(0, z_2), nrow=5, 
+              ncol=ncol(dev_set), byrow=F) ## 5 x 12597
+
+z_3 <- (w_3 %*% a_2) 
+z_3 <- sweep(z_3, 1, b_3, "+") ## 3 x 12597
+a_3 <- matrix(pmax(0, z_3), nrow=3, 
+              ncol=ncol(dev_set), byrow=F) ## 3 x 12597
+
+z_4 <- (w_4 %*% a_3) 
+z_4 <- sweep(z_4, 1, b_4, "+") ## 10 x 12597
+t_4 <- exp(z_4) ## 10 x 29403
+a_4 <- t(t(t_4) / colSums(t_4)) ## 10 x 12597
+
+
+y_hat <- rownames(a_4)[apply(a_4,2,which.max)]
+y_hat <- gsub("[^0-9]", "", y_hat)
+y_hat <- as.data.frame(as.numeric(y_hat), nrow=nrow(dev.label), ncol=1)
+colnames(y_hat) <- c("label")
+
+head(dev.label)
+head(y_hat)
+
+table(y_hat)
+
+acc <- merge(y_hat, dev.label, by = label)
+dev_accuracy <- nrow(acc) / nrow(dev.label) 
+print(dev_accuracy)
+```
+
+## Visualization
+
+Following JunMa, I provide a way for users to randomly select a digit from the development set, predict the label via one pass through forward propagation, and visualize the selected digit to assess model accuracy.
+
+```{r, echo = TRUE}
+## Function to display digit... thanks to JunMa
+displayDigit <- function(X){
+        m <- matrix(unlist(X),nrow = 28,byrow = T)
+        m <- t(apply(m, 2, rev))
+        image(m,col=grey.colors(255))
+}
+```
+
+
+```{r, echo = TRUE}
+dev.sample.index <- sample(1:ncol(dev_set),1)
+dev.sample <- as.matrix(dev_set[,dev.sample.index]) 
+
+z_1 <- (w_1 %*% dev.sample)
+z_1 <- sweep(z_1, 1, b_1, "+") ## 15 x 1
+a_1 <- matrix(pmax(0, z_1), nrow=15, 
+              ncol=ncol(dev.sample), byrow=F) ## 15 x 1
+
+
+z_2 <- (w_2 %*% a_1) 
+z_2 <- sweep(z_2, 1, b_2, "+") ## 5 x 1
+a_2 <- matrix(pmax(0, z_2), nrow=5, 
+              ncol=ncol(dev.sample), byrow=F) ## 5 x 1
+
+z_3 <- (w_3 %*% a_2) 
+z_3 <- sweep(z_3, 1, b_3, "+") ## 3 x 1
+a_3 <- matrix(pmax(0, z_3), nrow=3, 
+              ncol=ncol(dev.sample), byrow=F) ## 3 x 1
+
+z_4 <- (w_4 %*% a_3) 
+z_4 <- sweep(z_4, 1, b_4, "+") ## 10 x 1
+t_4 <- exp(z_4) ## 10 x 1
+a_4 <- t(t(t_4) / colSums(t_4)) ## 10 x 1
+
+
+y_hat <- rownames(a_4)[apply(a_4,2,which.max)]
+y_hat <- gsub("[^0-9]", "", y_hat)
+y_hat <- as.data.frame(as.numeric(y_hat), nrow=nrow(dev.sample), ncol=1)
+colnames(y_hat) <- c("label")
+
+print(paste("The predicted digit is:", y_hat))
+
+## Assess truth
+
+train2 <- read.csv("train.csv", header = TRUE) ## 42000 x 785
+
+dev_set2 <- train2[-inTrain, ]
+
+dev.sample2 <- dev_set2[dev.sample.index,]
+
+displayDigit(dev.sample2[1,-1])
+```
+
+## Conclusion
+
+While there are more efficient ways to construct a neural network, I find that building one "from scratch" is a useful exercise for learning the mechanics of the model. I'd like to thank JunMa for providing inspiration - as well as some of the code used in this analysis. I learned a great deal from his post, and hope that others find my analysis useful as well. Any errors present in this report are my own.  
+
+
+
+
+
+
+
+
+
+
+
+
+
